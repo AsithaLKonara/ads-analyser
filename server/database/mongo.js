@@ -18,7 +18,6 @@ async function connectToMongo() {
         return db;
     } catch (error) {
         console.error('MongoDB Connection Error:', error);
-        // Fallback for when DB is not ready
         return null;
     }
 }
@@ -41,4 +40,12 @@ async function saveAds(ads, keyword) {
     }
 }
 
-module.exports = { connectToMongo, saveAds };
+async function getTrends() {
+    const mongoDb = await connectToMongo();
+    if (!mongoDb) return [];
+    
+    const collection = mongoDb.collection('scraped_ads');
+    return await collection.find().sort({ updatedAt: -1 }).limit(100).toArray();
+}
+
+module.exports = { connectToMongo, saveAds, getTrends };

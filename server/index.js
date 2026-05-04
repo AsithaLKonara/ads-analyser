@@ -4,13 +4,17 @@ const cors = require('cors');
 const { scrapeAds } = require('./scraper');
 const { parseUserIntent } = require('./ai/intentParser');
 const { generateRecommendation, generateAdCopy } = require('./ai/recommendation');
-const { saveAds, connectToMongo } = require('./database/mongo');
+const { saveAds, connectToMongo, getTrends } = require('./database/mongo');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
 app.use(cors());
 app.use(express.json());
+
+app.get('/', (req, res) => {
+    res.json({ message: 'Ads Analyzer API Server is running', status: 'OK' });
+});
 
 // Ad Classification Logic
 function classifyAd(text) {
@@ -100,6 +104,15 @@ app.post('/api/generate-copy', async (req, res) => {
         res.json(copy);
     } catch (error) {
         res.status(500).json({ error: 'Failed to generate ad copy' });
+    }
+});
+
+app.get('/api/trends', async (req, res) => {
+    try {
+        const trends = await getTrends();
+        res.json(trends);
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to fetch trends' });
     }
 });
 
