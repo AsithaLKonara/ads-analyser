@@ -2,6 +2,9 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { scrapeAds } = require('./scraper');
+const { parseUserIntent } = require('./ai/intentParser');
+const { generateRecommendation, generateAdCopy } = require('./ai/recommendation');
+const { saveAds, connectToMongo } = require('./database/mongo');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -26,39 +29,77 @@ function classifyAd(text) {
 
 app.get('/api/search', async (req, res) => {
     const { q } = req.query;
-    if (!q) return res.status(400).json({ error: 'Keyword is required' });
+    if (!q) return res.status(400).json({ error: 'Keyword or intent is required' });
 
-    console.log(`Searching for: ${q}`);
+    console.log(`[${new Date().toISOString()}] Intent analysis for: ${q}`);
+    
     try {
-        const rawAds = await scrapeAds(q);
+        // 1. Parse Intent with AI
+        let intent;
+        try {
+            intent = await parseUserIntent(q);
+        } catch (e) {
+            console.log('AI Intent fallback:', e.message);
+            intent = { product: q, market: 'Sri Lanka', search_keywords: [q] };
+        }
+
+        // 2. Scrape Meta Ad Library (using first keyword)
+        const keyword = intent.search_keywords[0] || intent.product;
+        console.log(`[${new Date().toISOString()}] Scraping keyword: ${keyword}`);
+        const rawAds = await scrapeAds(keyword);
         
+        // 3. Analyze and Score Ads
         const analyzedAds = rawAds.map(ad => {
             const { categories, hooks } = classifyAd(ad.text);
-            
-            // Success indicator: If running for more than 7 days (simplified logic)
-            // In a real app, we'd parse the date and compare with today.
             const isWorking = ad.startDate.toLowerCase().includes('2024') || ad.startDate.toLowerCase().includes('days ago'); 
             
             return {
                 ...ad,
                 categories,
                 hooks,
-                status: isWorking ? 'Probably Profitable' : 'Testing'
+                status: isWorking ? 'Probably Profitable' : 'Testing',
+                score: (isWorking ? 50 : 10) + (ad.text.length > 100 ? 20 : 0) // Simple scoring logic
             };
         });
 
+        // 4. Generate Strategy with AI
+        let strategy = null;
+        if (analyzedAds.length > 0) {
+            try {
+                strategy = await generateRecommendation(intent, analyzedAds);
+            } catch (e) {
+                console.log('AI Strategy fallback:', e.message);
+            }
+        }
+
+        // 5. Save to MongoDB
+        await saveAds(analyzedAds, keyword);
+
         res.json({
-            keyword: q,
+            intent,
             count: analyzedAds.length,
-            ads: analyzedAds,
+            ads: analyzedAds.sort((a, b) => b.score - a.score),
+            strategy,
             insights: {
                 trendingHooks: [...new Set(analyzedAds.flatMap(a => a.hooks))],
                 commonCategories: [...new Set(analyzedAds.flatMap(a => a.categories))]
             }
         });
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ error: 'Failed to fetch ads' });
+        console.error('FULL ERROR:', error);
+        const logPath = require('path').join(__dirname, 'server_error.log');
+        require('fs').appendFileSync(logPath, `\n\n[${new Date().toISOString()}] ERROR:\n${error.stack}\n`);
+        res.status(500).json({ error: 'Failed to fetch ads', details: error.message });
+    }
+});
+
+app.post('/api/generate-copy', async (req, res) => {
+    const { intent, strategy } = req.body;
+    try {
+        const copy = await generateAdCopy(intent, strategy);
+        res.json(copy);
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to generate ad copy' });
     }
 });
 
